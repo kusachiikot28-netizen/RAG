@@ -56,9 +56,12 @@ interface GenerationParams {
 export default function App() {
   const [mapCenter, setMapCenter] = useState<[number, number]>([52.979167, 36.065278]); // Orel, Russia
   const [zoom, setZoom] = useState(13);
+  const [sourceMode, setSourceMode] = useState<'image' | 'text'>('image');
+  const [inputText, setInputText] = useState('');
   const [uploadedImage, setUploadedImage] = useState<string | null>(null);
   const [imageBounds, setImageBounds] = useState<L.LatLngBoundsExpression | null>(null);
   const [imagePoints, setImagePoints] = useState<Point[]>([]);
+  const [relativePoints, setRelativePoints] = useState<{x: number, y: number}[]>([]);
   const [generatedRoute, setGeneratedRoute] = useState<Point[]>([]);
   const [isGenerating, setIsGenerating] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
@@ -74,7 +77,7 @@ export default function App() {
     type: null
   });
 
-  const mapRef = useRef<L.Map | null>(null);
+  // const mapRef = useRef<L.Map | null>(null); // Removed unused ref that might cause issues in v5
 
   // Handle image upload and vectorization
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -90,6 +93,52 @@ export default function App() {
     reader.readAsDataURL(file);
   };
 
+  const extractPointsFromCanvas = (canvas: HTMLCanvasElement, ctx: CanvasRenderingContext2D) => {
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    const data = imageData.data;
+    const points: { x: number, y: number }[] = [];
+
+    for (let y = 0; y < canvas.height; y++) {
+      for (let x = 0; x < canvas.width; x++) {
+        const idx = (y * canvas.width + x) * 4;
+        const r = data[idx];
+        const g = data[idx + 1];
+        const b = data[idx + 2];
+        const a = data[idx + 3];
+
+        const brightness = (r + g + b) / 3;
+        if (brightness < 128 && a > 128) {
+          let isEdge = false;
+          if (x > 0 && x < canvas.width - 1 && y > 0 && y < canvas.height - 1) {
+            const neighbors = [
+              ((y - 1) * canvas.width + x) * 4,
+              ((y + 1) * canvas.width + x) * 4,
+              (y * canvas.width + x - 1) * 4,
+              (y * canvas.width + x + 1) * 4
+            ];
+            for (const nIdx of neighbors) {
+              if (data[nIdx + 3] < 128 || (data[nIdx] + data[nIdx + 1] + data[nIdx + 2]) / 3 > 128) {
+                isEdge = true;
+                break;
+              }
+            }
+          } else {
+            isEdge = true;
+          }
+
+          if (isEdge) {
+            points.push({ x: x / canvas.width, y: y / canvas.height });
+          }
+        }
+      }
+    }
+
+    const simplified = points.filter((_, i) => i % 5 === 0);
+    const relPoints = simplified.map(p => ({ x: p.x - 0.5, y: p.y - 0.5 }));
+    setRelativePoints(relPoints);
+    updateMapPoints(relPoints, mapCenter, params.scale);
+  };
+
   const processImage = (dataUrl: string) => {
     const img = new Image();
     img.onload = () => {
@@ -102,51 +151,34 @@ export default function App() {
       canvas.width = img.width * scale;
       canvas.height = img.height * scale;
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-
-      const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
-      const data = imageData.data;
-      const points: { x: number, y: number }[] = [];
-
-      for (let y = 0; y < canvas.height; y++) {
-        for (let x = 0; x < canvas.width; x++) {
-          const idx = (y * canvas.width + x) * 4;
-          const r = data[idx];
-          const g = data[idx + 1];
-          const b = data[idx + 2];
-          const a = data[idx + 3];
-
-          const brightness = (r + g + b) / 3;
-          if (brightness < 128 && a > 128) {
-            let isEdge = false;
-            if (x > 0 && x < canvas.width - 1 && y > 0 && y < canvas.height - 1) {
-              const neighbors = [
-                ((y - 1) * canvas.width + x) * 4,
-                ((y + 1) * canvas.width + x) * 4,
-                (y * canvas.width + x - 1) * 4,
-                (y * canvas.width + x + 1) * 4
-              ];
-              for (const nIdx of neighbors) {
-                if (data[nIdx + 3] < 128 || (data[nIdx] + data[nIdx + 1] + data[nIdx + 2]) / 3 > 128) {
-                  isEdge = true;
-                  break;
-                }
-              }
-            } else {
-              isEdge = true;
-            }
-
-            if (isEdge) {
-              points.push({ x: x / canvas.width, y: y / canvas.height });
-            }
-          }
-        }
-      }
-
-      const simplified = points.filter((_, i) => i % 5 === 0);
-      const relativePoints = simplified.map(p => ({ x: p.x - 0.5, y: p.y - 0.5 }));
-      updateMapPoints(relativePoints, mapCenter, params.scale);
+      extractPointsFromCanvas(canvas, ctx);
     };
     img.src = dataUrl;
+  };
+
+  const processText = (text: string) => {
+    if (!text) return;
+    const canvas = document.createElement('canvas');
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    canvas.width = 400;
+    canvas.height = 100;
+    
+    // Clear background
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    
+    // Draw text
+    ctx.fillStyle = 'black';
+    ctx.font = 'bold 60px Inter';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(text, canvas.width / 2, canvas.height / 2);
+
+    // Convert canvas to data URL for preview
+    setUploadedImage(canvas.toDataURL());
+    extractPointsFromCanvas(canvas, ctx);
   };
 
   const updateMapPoints = (relPoints: {x: number, y: number}[], center: [number, number], scaleKm: number) => {
@@ -166,6 +198,12 @@ export default function App() {
       [center[0] + halfLat, center[1] + halfLng]
     ]);
   };
+
+  useEffect(() => {
+    if (relativePoints.length > 0) {
+      updateMapPoints(relativePoints, mapCenter, params.scale);
+    }
+  }, [params.scale, mapCenter]);
 
   const generateRoute = async () => {
     if (imagePoints.length === 0) return;
@@ -225,7 +263,7 @@ export default function App() {
   };
 
   return (
-    <div className="flex h-full w-full bg-zinc-950 font-sans text-zinc-100 antialiased">
+    <div className="flex h-screen w-full bg-zinc-950 font-sans text-zinc-100 antialiased overflow-hidden">
       {/* Sidebar */}
       <AnimatePresence mode="wait">
         {sidebarOpen && (
@@ -262,25 +300,67 @@ export default function App() {
                     <Upload className="h-3.5 w-3.5" /> 01. Source Image
                   </h2>
                 </div>
-                <div className="group relative flex h-40 w-full cursor-pointer flex-col items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-zinc-800 bg-zinc-900/50 transition-all hover:border-orange-500/50 hover:bg-orange-500/5">
+            <div className="flex rounded-xl bg-zinc-900 p-1 border border-zinc-800">
+              <button 
+                onClick={() => setSourceMode('image')}
+                className={cn(
+                  "flex-1 rounded-lg py-1.5 text-[10px] font-bold uppercase tracking-wider transition-all",
+                  sourceMode === 'image' ? "bg-zinc-800 text-white shadow-sm" : "text-zinc-500 hover:text-zinc-300"
+                )}
+              >
+                Image
+              </button>
+              <button 
+                onClick={() => setSourceMode('text')}
+                className={cn(
+                  "flex-1 rounded-lg py-1.5 text-[10px] font-bold uppercase tracking-wider transition-all",
+                  sourceMode === 'text' ? "bg-zinc-800 text-white shadow-sm" : "text-zinc-500 hover:text-zinc-300"
+                )}
+              >
+                Text
+              </button>
+            </div>
+
+            {sourceMode === 'image' ? (
+              <div className="group relative flex h-40 w-full cursor-pointer flex-col items-center justify-center overflow-hidden rounded-2xl border-2 border-dashed border-zinc-800 bg-zinc-900/50 transition-all hover:border-orange-500/50 hover:bg-orange-500/5">
+                <input 
+                  type="file" 
+                  className="absolute inset-0 z-10 opacity-0 cursor-pointer" 
+                  accept="image/*"
+                  onChange={handleImageUpload}
+                />
+                {uploadedImage && sourceMode === 'image' ? (
+                  <img src={uploadedImage} alt="Preview" className="h-full w-full object-contain p-4 transition-transform group-hover:scale-105" />
+                ) : (
+                  <>
+                    <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-zinc-800 transition-colors group-hover:bg-orange-500/20">
+                      <Upload className="h-6 w-6 text-zinc-400 group-hover:text-orange-500" />
+                    </div>
+                    <span className="text-xs font-semibold text-zinc-400 group-hover:text-orange-400">Drop image here</span>
+                    <span className="mt-1 text-[10px] text-zinc-600">PNG, JPG, SVG</span>
+                  </>
+                )}
+              </div>
+            ) : (
+              <div className="space-y-3">
+                <div className="relative">
                   <input 
-                    type="file" 
-                    className="absolute inset-0 z-10 opacity-0 cursor-pointer" 
-                    accept="image/*"
-                    onChange={handleImageUpload}
+                    type="text"
+                    value={inputText}
+                    onChange={(e) => setInputText(e.target.value)}
+                    placeholder="Enter text (e.g. RUN)"
+                    className="w-full rounded-xl border border-zinc-800 bg-zinc-900 px-4 py-3 text-sm font-medium text-white placeholder:text-zinc-600 focus:border-orange-500/50 focus:outline-none focus:ring-1 focus:ring-orange-500/50"
                   />
-                  {uploadedImage ? (
-                    <img src={uploadedImage} alt="Preview" className="h-full w-full object-contain p-4 transition-transform group-hover:scale-105" />
-                  ) : (
-                    <>
-                      <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-zinc-800 transition-colors group-hover:bg-orange-500/20">
-                        <Upload className="h-6 w-6 text-zinc-400 group-hover:text-orange-500" />
-                      </div>
-                      <span className="text-xs font-semibold text-zinc-400 group-hover:text-orange-400">Drop image here</span>
-                      <span className="mt-1 text-[10px] text-zinc-600">PNG, JPG, SVG</span>
-                    </>
-                  )}
                 </div>
+                <button 
+                  onClick={() => processText(inputText)}
+                  disabled={!inputText}
+                  className="flex w-full items-center justify-center gap-2 rounded-xl bg-zinc-800 py-2 text-xs font-bold text-zinc-300 transition-all hover:bg-zinc-700 hover:text-white disabled:opacity-50"
+                >
+                  Apply Text
+                </button>
+              </div>
+            )}
               </section>
 
               {/* Step 2: Parameters */}
@@ -444,8 +524,10 @@ export default function App() {
               onClick={() => {
                 setGeneratedRoute([]);
                 setImagePoints([]);
+                setRelativePoints([]);
                 setUploadedImage(null);
                 setImageBounds(null);
+                setInputText('');
                 setStatus({ message: '', type: null });
               }}
               className="p-3 text-zinc-400 hover:bg-red-500/20 hover:text-red-500 transition-colors" 
@@ -466,11 +548,10 @@ export default function App() {
           zoom={zoom} 
           zoomControl={false}
           className="h-full w-full"
-          ref={mapRef}
         >
           <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>'
-            url="https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png"
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
           />
           
           <MapEventsHandler 
