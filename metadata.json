@@ -1,0 +1,7 @@
+{
+  "name": "RouteArt Generator",
+  "description": "Create Strava Art by generating running or cycling routes from uploaded images mapped onto real road networks.",
+  "requestFramePermissions": [
+    "geolocation"
+  ]
+}
